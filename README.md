@@ -112,12 +112,3 @@ Progress for reference — the same checkpoint family early in training:
 - Training runs in bf16 autocast (`--amp`); the paper doesn't state a precision.
 - `pymunk` must stay `<7` (gym-pusht uses the pymunk 6 collision API).
 
-## Gotchas
-
-- The Columbia host throttles to ~12 KB/s per connection, so `prepare.py`'s
-  single-stream download of the 31 MB `pusht.zip` can take ~40 min. The cap is
-  per-connection — fetching in parallel byte ranges cuts it to about a minute.
-- The first `features.py` run pulls DINOv2 from `torch.hub` (GitHub + the fbai
-  weights host). A transient network failure there surfaces as a misleading
-  "no internet connection and the repo could not be found in the cache" — just
-  retry; `prepare.py` is idempotent and skips completed stages.
