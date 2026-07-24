@@ -37,8 +37,8 @@ def main():
     policy = PatchPolicy().to(device)
     policy.load_state_dict(ckpt["ema"])  # EMA weights, not the raw ones
     policy.eval()
-    act_min = ckpt["act_min"].numpy()
-    act_max = ckpt["act_max"].numpy()
+    act_min = ckpt["act_min"].cpu().numpy()
+    act_max = ckpt["act_max"].cpu().numpy()
     print(f"loaded {args.ckpt} (step {ckpt['step']}) on {device}")
 
     dino = load_dino(device)

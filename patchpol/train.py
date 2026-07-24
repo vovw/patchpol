@@ -10,6 +10,7 @@ Checkpoints land in checkpoints/ — 'ema' weights are the ones to eval.
 """
 
 import argparse
+import contextlib
 import math
 import time
 from pathlib import Path
@@ -32,8 +33,14 @@ def cosine_lr(step: int, total: int, base: float, warmup: int = 500) -> float:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--steps", type=int, default=50_000)
-    ap.add_argument("--batch-size", type=int, default=256)
+    ap.add_argument("--batch-size", type=int, default=256,
+                    help="micro-batch fed to the GPU per forward")
+    ap.add_argument("--grad-accum", type=int, default=1,
+                    help="accumulate this many micro-batches per optimizer step; "
+                         "effective batch = batch-size * grad-accum")
     ap.add_argument("--lr", type=float, default=1e-4)
+    ap.add_argument("--amp", action="store_true",
+                    help="bf16 autocast — faster + lower memory on Ampere+ GPUs")
     ap.add_argument("--out", type=str, default="checkpoints")
     ap.add_argument("--save-every", type=int, default=5_000)
     args = ap.parse_args()
@@ -64,34 +71,51 @@ def main():
             out_dir / name,
         )
 
+    accum = args.grad_accum
+    eff_bs = args.batch_size * accum
+    amp_ctx = (
+        torch.autocast("cuda", dtype=torch.bfloat16)
+        if args.amp and device.type == "cuda"
+        else contextlib.nullcontext()
+    )
     n = sum(p.numel() for p in policy.parameters())
-    print(f"device={device} | params={n/1e6:.1f}M | {args.steps} steps @ bs={args.batch_size}")
+    print(f"device={device} | params={n/1e6:.1f}M | {args.steps} steps @ "
+          f"micro-bs {args.batch_size} x accum {accum} = eff bs {eff_bs}")
 
-    step, t0, running = 0, time.time(), 0.0
-    while step < args.steps:
+    # one optimizer step = `accum` micro-batches; `step` counts optimizer steps
+    # so --steps still means the paper's 50k updates at the effective batch.
+    step, t0, running, micro = 0, time.time(), 0.0, 0
+    opt.zero_grad(set_to_none=True)
+    stop = False
+    while not stop:
         for batch in dl:  # re-enter the loader each epoch
-            if step >= args.steps:
-                break
+            with amp_ctx:
+                loss = policy.loss(batch["obs"].to(device), batch["action"].to(device))
+            (loss / accum).backward()   # scale so accumulated grad = mean over eff batch
+            running += loss.item()
+            micro += 1
+            if micro % accum != 0:
+                continue  # keep accumulating until we've filled the effective batch
+
             lr = cosine_lr(step, args.steps, args.lr)
             for g in opt.param_groups:
                 g["lr"] = lr
-
-            loss = policy.loss(batch["obs"].to(device), batch["action"].to(device))
-            opt.zero_grad(set_to_none=True)
-            loss.backward()
             opt.step()
             ema.update(policy, step)
+            opt.zero_grad(set_to_none=True)
 
-            running += loss.item()
             step += 1
             if step % 100 == 0:
                 sps = step / (time.time() - t0)
                 eta_min = (args.steps - step) / sps / 60
-                print(f"step {step:>6}/{args.steps} | loss {running/100:.4f} | "
+                print(f"step {step:>6}/{args.steps} | loss {running/(100*accum):.4f} | "
                       f"lr {lr:.2e} | {sps:.1f} it/s | eta {eta_min:.0f}m", flush=True)
                 running = 0.0
             if step % args.save_every == 0:
                 save(f"step_{step}.pt", step)
+            if step >= args.steps:
+                stop = True
+                break
 
     save("final.pt", step)
     print(f"done. final checkpoint: {out_dir/'final.pt'}")

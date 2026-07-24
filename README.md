@@ -11,7 +11,7 @@ replacing global-pooled features with these patch features
 Reproduction of [Patch Policy: Efficient Embodied Control via Dense Visual
 Representations](https://patch-policy.github.io/) (arXiv 2607.18236) on Push-T,
 DINOv2 + Diffusion Policy head. **Paper target: 0.83 coverage** (Table 13),
-100 rollouts.
+100 rollouts — **this repro gets 0.772** ([Results](#results)).
 
 ## How it works
 
@@ -35,11 +35,24 @@ uv run python -m patchpol.prepare   # download 206 demos -> re-render @224 -> DI
 ## Train
 
 ```bash
-uv run python -m patchpol.train                # 50k steps, bs 256, lr 1e-4 (Table 11)
+uv run python -m patchpol.train --batch-size 256 --amp   # 50k steps, lr 1e-4 (Table 11)
 ```
 
-Checkpoints land in `checkpoints/` every 5k steps. Loss should fall from ~1.0
-to well under 0.1. On a 4090 expect roughly 1–2 h.
+Checkpoints land in `checkpoints/` every 5k steps. Loss falls from ~1.0 to
+~0.003. On a 4090 the full 50k steps take **~3.5 h** at ~3.9 it/s.
+
+**`--amp` is not optional on a 24 GB card.** The block-causal `attn_mask` forces
+`F.scaled_dot_product_attention` off the flash kernel onto the math path, which
+materializes the full `(B, heads, 512, 512)` score matrix. Plain fp32 at bs 256
+needs ~24.1 GB and OOMs on a 4090; bf16 autocast peaks at **15.8 GB** and is
+~2.3x faster, with the same loss curve. Also set:
+
+```bash
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+```
+
+If you'd rather not use autocast, keep the paper's effective batch by
+accumulating instead (~8 h): `--batch-size 128 --grad-accum 2`.
 
 ## Eval
 
@@ -51,6 +64,33 @@ uv run python -m patchpol.eval --ckpt checkpoints/final.pt --episodes 5 --video 
 Reports final coverage (paper's metric), max coverage, and success rate
 (coverage > 0.95). Eval uses the **EMA** weights.
 
+## Results
+
+100 rollouts on `final.pt` (50k steps, EMA), RTX 4090:
+
+| metric | this repro | paper (Table 13) |
+|---|---|---|
+| **final coverage** | **0.772 ± 0.032** | **0.83** |
+| max coverage | 0.821 ± 0.028 | — |
+| success rate (>0.95) | 52% | — |
+
+About 0.06 short of the paper. The informative number is the gap between *max*
+(0.821, essentially at target) and *final* (0.772): the policy reliably drives
+the T onto the goal but sometimes drifts back off before the 300-step limit, so
+it loses coverage it had already earned. That's terminal-holding, not a failure
+to learn the task — closing it is where the remaining 0.06 lives (longer
+training, receding-horizon replanning, or the paper's per-frame chunk readout).
+
+Coverage varies run to run: only the env seed is fixed (`env.reset(seed=ep)`),
+while the DDPM sampler draws fresh noise each rollout.
+
+Progress for reference — the same checkpoint family early in training:
+
+| checkpoint | final coverage | success rate |
+|---|---|---|
+| `step_5000.pt` (10 eps) | 0.596 | 40% |
+| `final.pt` (100 eps) | 0.772 | 52% |
+
 ## Files
 
 | file | what |
@@ -60,7 +100,7 @@ Reports final coverage (paper's metric), max coverage, and success rate
 | `patchpol/features.py` | frozen DINOv2 ViT-S/14 -> (25650, 256, 384) fp16 patch features |
 | `patchpol/model.py` | block-causal trunk (8L/6H/384d, 14.4M params) + causality unit tests |
 | `patchpol/diffusion.py` | hand-rolled DDPM (squared-cosine schedule), transformer denoiser (8L/4H/256d), EMA |
-| `patchpol/train.py` | AdamW, cosine LR + warmup, EMA tracking |
+| `patchpol/train.py` | AdamW, cosine LR + warmup, EMA tracking, `--amp` (bf16) + `--grad-accum` |
 | `patchpol/eval.py` | gym-pusht rollouts, online DINOv2, coverage metrics, videos |
 | `patchpol/prepare.py` | one-shot data prep for a fresh machine |
 
@@ -72,5 +112,17 @@ Reports final coverage (paper's metric), max coverage, and success rate
 - Diffusion specifics (schedule, 100 steps, EMA) follow the original Diffusion
   Policy since the paper doesn't state them.
 - Conditioning uses the last frame's readout only; the paper reads out a chunk
-  at every frame.
+  at every frame. This is the most likely source of the terminal-drift gap in
+  [Results](#results).
+- Training runs in bf16 autocast (`--amp`); the paper doesn't state a precision.
 - `pymunk` must stay `<7` (gym-pusht uses the pymunk 6 collision API).
+
+## Gotchas
+
+- The Columbia host throttles to ~12 KB/s per connection, so `prepare.py`'s
+  single-stream download of the 31 MB `pusht.zip` can take ~40 min. The cap is
+  per-connection — fetching in parallel byte ranges cuts it to about a minute.
+- The first `features.py` run pulls DINOv2 from `torch.hub` (GitHub + the fbai
+  weights host). A transient network failure there surfaces as a misleading
+  "no internet connection and the repo could not be found in the cache" — just
+  retry; `prepare.py` is idempotent and skips completed stages.
