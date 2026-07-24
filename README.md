@@ -3,11 +3,6 @@
 visuomotor policies simply need dense features.
 replacing global-pooled features with these patch features
 
-- dense representations outperform global features for control
-- pretrained ViT features transfer to control
-- spatial compression degrades control ??
-- "highly efficient"
-
 Reproduction of [Patch Policy: Efficient Embodied Control via Dense Visual
 Representations](https://patch-policy.github.io/) (arXiv 2607.18236) on Push-T,
 DINOv2 + Diffusion Policy head. **Paper target: 0.83 coverage** (Table 13),
