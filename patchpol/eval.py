@@ -30,6 +30,9 @@ def main():
     ap.add_argument("--ckpt", type=str, required=True)
     ap.add_argument("--episodes", type=int, default=100)
     ap.add_argument("--video", type=int, default=0, help="save this many episode mp4s")
+    ap.add_argument("--pixels96", action="store_true",
+                    help="render at 96px and bicubic-upscale to 224, matching the "
+                         "training features of --data lerobot checkpoints")
     args = ap.parse_args()
 
     device = get_device()
@@ -43,13 +46,21 @@ def main():
 
     dino = load_dino(device)
 
+    if args.pixels96:
+        from patchpol.lerobot_features import upscale_preprocess
+
+        prep = lambda img_u8: upscale_preprocess(img_u8, device)  # noqa: E731
+    else:
+        prep = lambda img_u8: preprocess(img_u8, device)  # noqa: E731
+
     @torch.inference_mode()
     def frame_features(img_u8: np.ndarray) -> torch.Tensor:
-        x = preprocess(img_u8[None], device)                     # (1,3,224,224)
+        x = prep(img_u8[None])                                    # (1,3,224,224)
         return dino.forward_features(x)["x_norm_patchtokens"][0]  # (256, 384)
 
+    res = 96 if args.pixels96 else RES
     env = PushTEnv(obs_type="pixels", render_mode="rgb_array",
-                   observation_width=RES, observation_height=RES)
+                   observation_width=res, observation_height=res)
 
     finals, maxes, successes = [], [], []
     for ep in range(args.episodes):

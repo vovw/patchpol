@@ -41,12 +41,19 @@ def main():
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--amp", action="store_true",
                     help="bf16 autocast — faster + lower memory on Ampere+ GPUs")
+    ap.add_argument("--data", choices=["zarr", "lerobot"], default="zarr",
+                    help="zarr: original cchi replay; lerobot: hub lerobot/pusht")
     ap.add_argument("--out", type=str, default="checkpoints")
     ap.add_argument("--save-every", type=int, default=5_000)
     args = ap.parse_args()
 
     device = get_device()
-    ds = PushTDataset(features_zarr=OUT_ZARR)
+    if args.data == "lerobot":
+        from patchpol.lerobot_data import LeRobotPushT
+
+        ds = LeRobotPushT()
+    else:
+        ds = PushTDataset(features_zarr=OUT_ZARR)
     dl = DataLoader(
         ds, batch_size=args.batch_size, shuffle=True, drop_last=True,
         num_workers=2, persistent_workers=True,
