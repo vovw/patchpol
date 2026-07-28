@@ -3,7 +3,7 @@
 Reads:  data/pusht/img224.zarr        (25650, 224, 224, 3) uint8
 Writes: data/pusht/dino_vits14.zarr   (25650, 256, 384) float16
 
-Fill in the three TODOs, then run:  uv run python -m patchpol.features
+Run:  uv run python -m patchpol.features   (or patchpol.prepare, which chains it)
 """
 
 import numpy as np
