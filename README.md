@@ -2,6 +2,8 @@
 
 visuomotor policies simply need dense features.
 replacing global-pooled features with these patch features
+<img width="4836" height="2313" alt="image" src="https://github.com/user-attachments/assets/ab9bdbdf-322b-44fe-94fd-d7d0e112e34d" />
+
 
 Reproduction of [Patch Policy: Efficient Embodied Control via Dense Visual
 Representations](https://patch-policy.github.io/) (arXiv 2607.18236) on Push-T,
